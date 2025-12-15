@@ -1,25 +1,18 @@
 import asyncio
 import sys
-
-# 1. Imports
-# We use ChatOllama instead of ChatOpenAI
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-async def run_agent():
-    print("🤖 Initializing Ollama Agent (Llama 3.2)...")
-    
-    # 2. Setup the LLM (Ollama)
-    # We use 'llama3.2' which supports tool calling natively
-    llm = ChatOllama(
-        model="llama3.2", 
-        temperature=0
-    )
+async def get_agent_response(user_query: str):
+    """
+    Connects to the server, runs the agent, and returns the text response.
+    """
+    # 1. Setup Llama 3.2
+    llm = ChatOllama(model="llama3.2:1b", temperature=0)
 
-    # 3. Connect to the Budget Server
-    # Ensure budget_mcp_server.py is running in another terminal!
+    # 2. Connect to Budget Server (Standard connection, no context manager)
     client = MultiServerMCPClient({
         "budget": {
             "url": "http://localhost:3333/sse",
@@ -27,37 +20,32 @@ async def run_agent():
         }
     })
 
-    print("🔗 Connecting to Budget Server...")
     try:
+        # 3. Get Tools & Create Agent
         tools = await client.get_tools()
-        print(f"✅ Connected! Found tools: {[t.name for t in tools]}")
-    except Exception as e:
-        print(f"❌ Connection Failed. Is budget_mcp_server.py running? Error: {e}")
-        return
+        agent_executor = create_react_agent(llm, tools)
 
-    # 4. Create the Agent
-    agent_executor = create_react_agent(llm, tools)
-
-    # 5. Define the User Query
-    query = "Plan a 5-day trip to Barcelona with an estimated budget."
-    print(f"\n📩 User Request: '{query}'\n")
-
-    # 6. Run the Agent
-    print("⏳ Thinking... (Local models can be slightly slower than cloud)")
-    try:
-        async for event in agent_executor.astream({"messages": [HumanMessage(content=query)]}, stream_mode="values"):
+        # 4. Run Agent
+        final_response = "Error: No response generated."
+        
+        # We stream the output to get the final message
+        async for event in agent_executor.astream(
+            {"messages": [HumanMessage(content=user_query)]}, 
+            stream_mode="values"
+        ):
             if "messages" in event:
-                event["messages"][-1].pretty_print()
+                # Capture the content of the last message
+                final_response = event["messages"][-1].content
+        
+        return final_response
+
     except Exception as e:
-        print(f"⚠️ Error during execution: {e}")
-        print("Tip: Ensure you ran 'ollama pull llama3.2' successfully.")
+        return f"Error: {str(e)}"
 
-    # Cleanup
-    await client.__aexit__(None, None, None)
-
+# Keep this so you can still run 'python agent.py' to test locally
 if __name__ == "__main__":
-    # Fix for Windows asyncio loop issues
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
-    asyncio.run(run_agent())
+    
+    # Test run
+    print(asyncio.run(get_agent_response("Plan a trip to Paris")))
